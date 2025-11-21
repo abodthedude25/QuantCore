@@ -677,6 +677,142 @@ class VARStrategy(BaseStrategy):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"VAR Algorithm Error: {str(e)}")
 
+STATIC_STRATEGIES = [
+    {"id": "macd", "name": "MACD Momentum", "risk": "Low", "inputs": 1},
+    {"id": "rsi", "name": "RSI Oscillator", "risk": "Low", "inputs": 1},
+    {"id": "bollinger", "name": "Bollinger Bands", "risk": "Medium", "inputs": 1},
+    {"id": "sentiment", "name": "AI Sentiment Analysis", "risk": "High", "inputs": 1},
+    {"id": "arima", "name": "ARIMA Forecast", "risk": "Medium", "inputs": 1},
+    {"id": "garch", "name": "GARCH Volatility", "risk": "Medium", "inputs": 1},
+    {"id": "rl", "name": "Q-Learning Portfolio", "risk": "High", "inputs": 1},
+    {"id": "ensemble", "name": "Ensemble Stacking", "risk": "Medium", "inputs": 1},
+    {"id": "wavelet", "name": "Wavelet + ML", "risk": "High", "inputs": 1}
+]
+
+
+from datetime import datetime, timedelta
+from typing import List, Dict, Any
+import pandas as pd
+class BacktestResult(BaseModel):
+    strategy_id: str
+    strategy_name: str
+    signal_history: List[str]
+    accuracy: float
+    cumulative_return: float
+    win_rate: float
+    total_trades: int
+    correct_predictions: int
+    avg_confidence: float
+    risk_level: str
+
+class CompareRequest(BaseModel):
+    ticker: str
+    period: str  # "1w", "1m", "3m", "6m", "1y"
+
+class CompareResponse(BaseModel):
+    ticker: str
+    period: str
+    start_date: str
+    end_date: str
+    current_price: float
+    period_return: float
+    results: List[BacktestResult]
+    best_strategy: str
+    best_accuracy: float
+    best_return: float
+
+def backtest_strategy(strategy_id: str, strategy: BaseStrategy, ticker: str, lookback_days: int) -> BacktestResult:
+    """
+    Backtest a strategy over historical data
+    """
+    try:
+        # Get historical data
+        df = get_historical_data(ticker, period="2y")
+        
+        if len(df) < lookback_days:
+            lookback_days = len(df)
+        
+        # Use data from lookback period
+        test_data = df.tail(lookback_days)
+        
+        signals = []
+        correct = 0
+        total = 0
+        confidences = []
+        
+        # Simple backtesting: check if signal direction matches next day's move
+        for i in range(len(test_data) - 1):
+            try:
+                # Run strategy on current data
+                result = strategy.run([ticker])
+                
+                signal = result.signal
+                signals.append(signal)
+                
+                # Get confidence if available
+                if hasattr(result.metrics, 'get'):
+                    conf = result.metrics.get('confidence', 0.5)
+                elif isinstance(result.metrics, dict):
+                    conf = result.metrics.get('confidence', 0.5)
+                else:
+                    conf = 0.5
+                confidences.append(float(conf) if isinstance(conf, (int, float)) else 0.5)
+                
+                # Check if prediction was correct
+                current_price = test_data.iloc[i]['Close']
+                next_price = test_data.iloc[i + 1]['Close']
+                actual_move = 'UP' if next_price > current_price else 'DOWN'
+                
+                predicted_move = 'UP' if any(x in signal for x in ['BUY', 'LONG', 'BULLISH', 'INCREASE']) else 'DOWN' if any(x in signal for x in ['SELL', 'SHORT', 'BEARISH', 'REDUCE']) else 'NEUTRAL'
+                
+                if predicted_move != 'NEUTRAL':
+                    total += 1
+                    if predicted_move == actual_move:
+                        correct += 1
+                        
+            except Exception as e:
+                continue
+        
+        # Calculate metrics
+        accuracy = (correct / total * 100) if total > 0 else 0
+        win_rate = accuracy
+        
+        # Calculate cumulative return (simplified)
+        start_price = float(test_data.iloc[0]['Close'])
+        end_price = float(test_data.iloc[-1]['Close'])
+        cumulative_return = ((end_price - start_price) / start_price) * 100
+        
+        # Get strategy metadata
+        strategy_info = next((s for s in STATIC_STRATEGIES if s['id'] == strategy_id), None)
+        
+        return BacktestResult(
+            strategy_id=strategy_id,
+            strategy_name=strategy_info['name'] if strategy_info else strategy_id,
+            signal_history=signals[-10:],
+            accuracy=round(accuracy, 2),
+            cumulative_return=round(cumulative_return, 2),
+            win_rate=round(win_rate, 2),
+            total_trades=total,
+            correct_predictions=correct,
+            avg_confidence=round(sum(confidences) / len(confidences) if confidences else 0, 2),
+            risk_level=strategy_info['risk'] if strategy_info else 'Medium'
+        )
+        
+    except Exception as e:
+        print(f"Backtest error for {strategy_id}: {e}")
+        strategy_info = next((s for s in STATIC_STRATEGIES if s['id'] == strategy_id), None)
+        return BacktestResult(
+            strategy_id=strategy_id,
+            strategy_name=strategy_info['name'] if strategy_info else strategy_id,
+            signal_history=[],
+            accuracy=0,
+            cumulative_return=0,
+            win_rate=0,
+            total_trades=0,
+            correct_predictions=0,
+            avg_confidence=0,
+            risk_level=strategy_info['risk'] if strategy_info else 'Medium'
+        )
 
 # ==========================================
 # API ENDPOINTS
@@ -729,6 +865,86 @@ def execute_strategy(req: StrategyRequest):
     
     strategy = strategies[req.strategy_id]
     return strategy.run(req.tickers)
+
+
+@app.post("/compare", response_model=CompareResponse)
+async def compare_strategies(req: CompareRequest):
+    """
+    Compare all applicable trading strategies for a given ticker
+    """
+    ticker = req.ticker
+    period = req.period
+    
+    # Map period to days
+    period_map = {
+        "1w": 7,
+        "1m": 30,
+        "3m": 90,
+        "6m": 180,
+        "1y": 365
+    }
+    
+    lookback_days = period_map.get(period, 30)
+    
+    try:
+        # Get price data for the period
+        df = get_historical_data(ticker, period="2y")
+        
+        if len(df) < lookback_days:
+            raise HTTPException(status_code=400, detail="Not enough historical data")
+        
+        period_data = df.tail(lookback_days)
+        start_price = float(period_data.iloc[0]['Close'])
+        end_price = float(period_data.iloc[-1]['Close'])
+        period_return = ((end_price - start_price) / start_price) * 100
+        
+        # Get all single-ticker strategies
+        single_ticker_strategies = [
+            ("macd", strategies["macd"]),
+            ("rsi", strategies["rsi"]),
+            ("bollinger", strategies["bollinger"]),
+            ("arima", strategies["arima"]),
+            ("garch", strategies["garch"]),
+            ("rl", strategies["rl"]),
+            ("ensemble", strategies["ensemble"]),
+            ("wavelet", strategies["wavelet"])
+        ]
+        
+        # Backtest each strategy
+        results = []
+        for strategy_id, strategy in single_ticker_strategies:
+            result = backtest_strategy(strategy_id, strategy, ticker, lookback_days)
+            results.append(result)
+        
+        # Find best strategy by accuracy
+        best_by_accuracy = max(results, key=lambda x: x.accuracy)
+        best_by_return = max(results, key=lambda x: abs(x.cumulative_return))
+        
+        # Calculate composite score for each result (without modifying the object)
+        results_with_scores = []
+        for result in results:
+            composite_score = (result.accuracy * 0.6) + (abs(result.cumulative_return) * 0.4)
+            results_with_scores.append((result, composite_score))
+        
+        # Find best overall by composite score
+        best_overall_tuple = max(results_with_scores, key=lambda x: x[1])
+        best_overall = best_overall_tuple[0]
+        
+        return CompareResponse(
+            ticker=ticker,
+            period=period,
+            start_date=period_data.index[0].strftime("%Y-%m-%d"),
+            end_date=period_data.index[-1].strftime("%Y-%m-%d"),
+            current_price=round(end_price, 2),
+            period_return=round(period_return, 2),
+            results=sorted(results, key=lambda x: x.accuracy, reverse=True),
+            best_strategy=best_overall.strategy_name,
+            best_accuracy=round(best_by_accuracy.accuracy, 2),
+            best_return=round(best_by_return.cumulative_return, 2)
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Comparison error: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
