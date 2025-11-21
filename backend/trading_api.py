@@ -2,32 +2,44 @@ import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
-from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
-from functools import lru_cache
-import time
-import requests
-from bs4 import BeautifulSoup
+from typing import List
+import warnings
+warnings.filterwarnings('ignore')
 
-# Data Science Imports
+# Import strategy modules
+from strategies.base import StrategyResponse
+from strategies.reinforcement_learning import RLPortfolioStrategy
+from strategies.ensemble import EnsembleStrategy
+from strategies.wavelet import WaveletMLStrategy
+
+# Import existing strategies (inline for now, but could be modularized)
+from strategies.utils import (
+    get_historical_data, 
+    get_real_news,
+    calculate_ema,
+    calculate_sma,
+    convert_to_serializable
+)
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
 from statsmodels.tsa.stattools import coint
-
-# AI Imports
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.stattools import grangercausalitytests
+from statsmodels.tsa.vector_ar.var_model import VAR
+from arch import arch_model
 from transformers import pipeline
 import torch
+from strategies.base import BaseStrategy
 
 # ==========================================
-# 1. CONFIGURATION & GLOBAL STATE
+# CONFIGURATION & GLOBAL STATE
 # ==========================================
 
-app = FastAPI(title="QuantCore Production API", version="1.0.0")
+app = FastAPI(title="QuantCore Production API", version="2.0.0")
 
-# Enable CORS for your React Frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,17 +47,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global ML Models (Loaded on Startup)
 ml_models = {}
 
 @app.on_event("startup")
 async def load_models():
-    """
-    Pre-load heavy AI models into memory to ensure low latency requests.
-    """
     print("--- SYSTEM STARTUP: LOADING AI MODELS ---")
     try:
-        # Check if GPU is available for faster processing
         device = 0 if torch.cuda.is_available() else -1
         ml_models['finbert'] = pipeline(
             "sentiment-analysis", 
@@ -57,117 +64,11 @@ async def load_models():
         print(f"❌ Error loading FinBERT: {e}")
 
 # ==========================================
-# 2. DATA INGESTION LAYER (With Caching)
-# ==========================================
-
-@lru_cache(maxsize=100)
-def get_historical_data(ticker: str, period: str = "1y"):
-    """
-    Fetches and caches stock data. 
-    Cache prevents rate-limiting from Yahoo Finance.
-    """
-    df = yf.download(ticker, period=period, progress=False)
-    if df.empty:
-        raise ValueError(f"No data found for ticker {ticker}")
-    
-    # Ensure we have a proper DataFrame with standard column names
-    if isinstance(df.columns, pd.MultiIndex):
-        # Flatten multi-index columns
-        df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
-    
-    return df
-
-def get_real_news(ticker: str):
-    """
-    Fetches news from Google News RSS instead of Yahoo.
-    Google RSS is faster, more reliable, and doesn't rate-limit as hard.
-    """
-    # 1. Construct the URL (We add 'stock' to ensure financial context)
-    # Example: https://news.google.com/rss/search?q=AAPL+stock
-    url = f"https://news.google.com/rss/search?q={ticker}+stock&hl=en-US&gl=US&ceid=US:en"
-
-    # 2. Fake a Browser Header (CRITICAL: Prevents 403 Forbidden errors)
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
-
-    try:
-        response = requests.get(url, headers=headers, timeout=5)
-        
-        # 3. Parse XML (requires lxml or features='xml')
-        soup = BeautifulSoup(response.content, features="xml")
-        items = soup.findAll('item')
-
-        formatted_news = []
-        
-        # 4. Extract top 5 articles
-        for item in items[:50]:
-            title = item.title.text
-            link = item.link.text
-            # pubDate is usually present in RSS
-            pub_date = item.pubDate.text if item.pubDate else "Recent"
-            
-            # Clean up title (Google often adds " - Publisher Name" at the end)
-            publisher = "Unknown"
-            if " - " in title:
-                try:
-                    parts = title.rsplit(" - ", 1)
-                    title = parts[0]
-                    publisher = parts[1]
-                except:
-                    pass
-
-            formatted_news.append({
-                "title": title,
-                "link": link,
-                "publisher": publisher,
-                "published": pub_date
-            })
-            
-        print(f"✅ Found {len(formatted_news)} articles for {ticker}")
-        return formatted_news
-
-    except Exception as e:
-        print(f"❌ News fetch error for {ticker}: {e}")
-        return []
-
-# ==========================================
-# 3. STRATEGY INTERFACE (The "Plug-in" System)
-# ==========================================
-
-class StrategyResponse(BaseModel):
-    strategy_name: str
-    signal: str  # BUY, SELL, HOLD
-    metrics: Dict[str, Any]
-    chart_data: Optional[Dict[str, Any]] = None
-    analysis_details: Optional[List[Dict[str, Any]]] = None
-
-class BaseStrategy(ABC):
-    @abstractmethod
-    def run(self, inputs: List[str]) -> StrategyResponse:
-        pass
-
-# ==========================================
-# 4. TECHNICAL INDICATOR HELPER FUNCTIONS
-# ==========================================
-
-def calculate_ema(data: pd.Series, period: int) -> pd.Series:
-    """Calculate Exponential Moving Average"""
-    return data.ewm(span=period, adjust=False).mean()
-
-def calculate_sma(data: pd.Series, period: int) -> pd.Series:
-    """Calculate Simple Moving Average"""
-    return data.rolling(window=period).mean()
-
-# ==========================================
-# 5. ALGORITHM IMPLEMENTATIONS
+# EXISTING STRATEGY IMPLEMENTATIONS
+# (Keep all existing strategies working)
 # ==========================================
 
 class MACDStrategy(BaseStrategy):
-    """
-    Moving Average Convergence Divergence Strategy
-    Captures momentum by comparing short-term and long-term trends
-    """
     def run(self, inputs: List[str]) -> StrategyResponse:
         if len(inputs) != 1:
             raise HTTPException(status_code=400, detail="MACD requires exactly 1 ticker")
@@ -175,16 +76,13 @@ class MACDStrategy(BaseStrategy):
         ticker = inputs[0]
         
         try:
-            # 1. Fetch Data
             df = get_historical_data(ticker, period="6mo")
             
             if len(df) < 50:
                 raise ValueError("Not enough data for MACD calculation (need 50+ days)")
             
-            # 2. Calculate MACD Components
             close_prices = df['Close']
             
-            # Standard MACD parameters
             ema_12 = calculate_ema(close_prices, 12)
             ema_26 = calculate_ema(close_prices, 26)
             
@@ -192,7 +90,6 @@ class MACDStrategy(BaseStrategy):
             signal_line = calculate_ema(macd_line, 9)
             histogram = macd_line - signal_line
             
-            # 3. Generate Signal - Extract scalar values
             current_macd = float(macd_line.iloc[-1])
             current_signal = float(signal_line.iloc[-1])
             current_histogram = float(histogram.iloc[-1])
@@ -201,17 +98,15 @@ class MACDStrategy(BaseStrategy):
             signal = "HOLD"
             signal_strength = abs(current_histogram)
             
-            # Crossover detection
             if current_histogram > 0 and previous_histogram <= 0:
-                signal = "STRONG BUY"  # Bullish crossover
+                signal = "STRONG BUY"
             elif current_histogram > 0:
-                signal = "BUY"  # Positive momentum
+                signal = "BUY"
             elif current_histogram < 0 and previous_histogram >= 0:
-                signal = "STRONG SELL"  # Bearish crossover
+                signal = "STRONG SELL"
             elif current_histogram < 0:
-                signal = "SELL"  # Negative momentum
+                signal = "SELL"
             
-            # 4. Prepare Chart Data (last 60 days)
             chart_length = min(60, len(macd_line))
             
             return StrategyResponse(
@@ -237,10 +132,6 @@ class MACDStrategy(BaseStrategy):
 
 
 class RSIStrategy(BaseStrategy):
-    """
-    Relative Strength Index Strategy
-    Identifies overbought/oversold conditions (0-100 scale)
-    """
     def run(self, inputs: List[str]) -> StrategyResponse:
         if len(inputs) != 1:
             raise HTTPException(status_code=400, detail="RSI requires exactly 1 ticker")
@@ -248,29 +139,23 @@ class RSIStrategy(BaseStrategy):
         ticker = inputs[0]
         
         try:
-            # 1. Fetch Data
             df = get_historical_data(ticker, period="6mo")
             
             if len(df) < 30:
                 raise ValueError("Not enough data for RSI calculation (need 30+ days)")
             
-            # 2. Calculate RSI (14-period standard)
             close_prices = df['Close']
             delta = close_prices.diff()
             
-            # Separate gains and losses
             gain = delta.where(delta > 0, 0)
             loss = -delta.where(delta < 0, 0)
             
-            # Calculate rolling averages
             avg_gain = gain.rolling(window=14).mean()
             avg_loss = loss.rolling(window=14).mean()
             
-            # Calculate RS and RSI
             rs = avg_gain / avg_loss
             rsi = 100 - (100 / (1 + rs))
             
-            # 3. Generate Signal - Extract scalar values
             current_rsi = float(rsi.iloc[-1])
             previous_rsi = float(rsi.iloc[-2])
             
@@ -290,10 +175,8 @@ class RSIStrategy(BaseStrategy):
                 signal = "SELL"
                 zone = "Approaching Overbought"
             
-            # Detect divergences (simplified)
             rsi_trend = "Rising" if current_rsi > previous_rsi else "Falling"
             
-            # 4. Prepare Chart Data
             chart_length = min(60, len(rsi))
             
             return StrategyResponse(
@@ -318,10 +201,6 @@ class RSIStrategy(BaseStrategy):
 
 
 class BollingerBandsStrategy(BaseStrategy):
-    """
-    Bollinger Bands Strategy
-    Combines trend + volatility using standard deviation bands
-    """
     def run(self, inputs: List[str]) -> StrategyResponse:
         if len(inputs) != 1:
             raise HTTPException(status_code=400, detail="Bollinger Bands requires exactly 1 ticker")
@@ -329,33 +208,24 @@ class BollingerBandsStrategy(BaseStrategy):
         ticker = inputs[0]
         
         try:
-            # 1. Fetch Data
             df = get_historical_data(ticker, period="6mo")
             
             if len(df) < 30:
                 raise ValueError("Not enough data for Bollinger Bands (need 30+ days)")
             
-            # 2. Calculate Bollinger Bands (20-day standard)
             close_prices = df['Close']
             
-            # Middle Band (SMA)
             sma_20 = calculate_sma(close_prices, 20)
             
-            # Calculate standard deviation
             std_20 = close_prices.rolling(window=20).std()
             
-            # Upper and Lower Bands (2 standard deviations)
             upper_band = sma_20 + (std_20 * 2)
             lower_band = sma_20 - (std_20 * 2)
             
-            # 3. Calculate Band Width and %B
             band_width = ((upper_band - lower_band) / sma_20) * 100
             
-            # %B tells us where price is relative to bands
-            # 0 = at lower band, 0.5 = at middle, 1 = at upper band
             percent_b = (close_prices - lower_band) / (upper_band - lower_band)
             
-            # 4. Generate Signal - Extract scalar values
             current_price = float(close_prices.iloc[-1])
             current_upper = float(upper_band.iloc[-1])
             current_lower = float(lower_band.iloc[-1])
@@ -366,7 +236,6 @@ class BollingerBandsStrategy(BaseStrategy):
             signal = "HOLD"
             position = "Neutral"
             
-            # Signal logic based on price position and volatility
             if current_percent_b < 0.2:
                 signal = "STRONG BUY"
                 position = "Near Lower Band"
@@ -380,10 +249,8 @@ class BollingerBandsStrategy(BaseStrategy):
                 signal = "SELL"
                 position = "Above Middle"
             
-            # Volatility assessment
             volatility = "Low" if current_bandwidth < 10 else "High" if current_bandwidth > 20 else "Normal"
             
-            # 5. Prepare Chart Data
             chart_length = min(60, len(close_prices))
             
             return StrategyResponse(
@@ -419,22 +286,18 @@ class PairsTradingStrategy(BaseStrategy):
         t1, t2 = inputs[0], inputs[1]
         
         try:
-            # 1. Fetch Data
             s1_df = get_historical_data(t1)
             s2_df = get_historical_data(t2)
             
-            # Extract close prices
             s1 = s1_df['Adj Close'] if 'Adj Close' in s1_df.columns else s1_df['Close']
             s2 = s2_df['Adj Close'] if 'Adj Close' in s2_df.columns else s2_df['Close']
             
-            # 2. Align Data
             df = pd.concat([s1, s2], axis=1, join='inner')
             df.columns = [t1, t2]
             
             if len(df) < 30:
                 raise ValueError("Not enough overlapping data points")
 
-            # 3. Math (Cointegration & Z-Score)
             X = sm.add_constant(df[t2])
             model = sm.OLS(df[t1], X).fit()
             hedge_ratio = model.params[t2]
@@ -448,7 +311,6 @@ class PairsTradingStrategy(BaseStrategy):
             
             current_z = float(z_score.iloc[-1])
             
-            # 4. Signal Logic
             signal = "HOLD"
             if current_z > 2.0:
                 signal = "SELL SPREAD"
@@ -481,7 +343,6 @@ class SentimentStrategy(BaseStrategy):
         if 'finbert' not in ml_models:
              raise HTTPException(status_code=503, detail="AI Model is still loading. Please wait.")
 
-        # 1. Get Real News
         news_items = get_real_news(ticker)
         
         if not news_items:
@@ -492,7 +353,6 @@ class SentimentStrategy(BaseStrategy):
                 analysis_details=[]
             )
 
-        # 2. Process Text - Filter out empty/None headlines
         headlines = [n['title'] for n in news_items if n.get('title') and n['title'].strip()]
         
         if not headlines:
@@ -503,7 +363,6 @@ class SentimentStrategy(BaseStrategy):
                 analysis_details=[]
             )
         
-        # 3. Run AI Inference
         try:
             results = ml_models['finbert'](headlines)
         except Exception as e:
@@ -515,7 +374,6 @@ class SentimentStrategy(BaseStrategy):
                 analysis_details=[]
             )
         
-        # 4. Aggregate Scores
         total_score = 0
         details = []
         
@@ -550,8 +408,278 @@ class SentimentStrategy(BaseStrategy):
             analysis_details=details
         )
 
+
+class ARIMAStrategy(BaseStrategy):
+    def run(self, inputs: List[str]) -> StrategyResponse:
+        if len(inputs) != 1:
+            raise HTTPException(status_code=400, detail="ARIMA requires exactly 1 ticker")
+        
+        ticker = inputs[0]
+        
+        try:
+            df = get_historical_data(ticker, period="2y")
+            
+            if len(df) < 100:
+                raise ValueError("Not enough data for ARIMA (need 100+ days)")
+            
+            close_prices = df['Close']
+            
+            train_data = close_prices.tail(200)
+            
+            model = ARIMA(train_data, order=(1, 1, 1))
+            fitted_model = model.fit()
+            
+            forecast_steps = 30
+            forecast_result = fitted_model.forecast(steps=forecast_steps)
+            
+            forecast_df = fitted_model.get_forecast(steps=forecast_steps)
+            forecast_ci = forecast_df.conf_int()
+            
+            current_price = float(close_prices.iloc[-1])
+            forecast_price = float(forecast_result.iloc[0])
+            forecast_30d = float(forecast_result.iloc[-1])
+            
+            expected_return = ((forecast_30d - current_price) / current_price) * 100
+            
+            signal = "HOLD"
+            if expected_return > 5:
+                signal = "STRONG BUY"
+            elif expected_return > 2:
+                signal = "BUY"
+            elif expected_return < -5:
+                signal = "STRONG SELL"
+            elif expected_return < -2:
+                signal = "SELL"
+            
+            aic = fitted_model.aic
+            bic = fitted_model.bic
+            
+            return StrategyResponse(
+                strategy_name="ARIMA Forecast",
+                signal=signal,
+                metrics=convert_to_serializable({
+                    "current_price": round(current_price, 2),
+                    "forecast_1d": round(forecast_price, 2),
+                    "forecast_30d": round(forecast_30d, 2),
+                    "expected_return": round(expected_return, 2),
+                    "model_aic": round(aic, 2),
+                    "model_bic": round(bic, 2),
+                    "confidence": "High" if abs(expected_return) > 5 else "Medium" if abs(expected_return) > 2 else "Low"
+                }),
+                chart_data=convert_to_serializable({
+                    "historical": close_prices.tail(60).tolist(),
+                    "forecast": forecast_result.tolist(),
+                    "upper_bound": forecast_ci.iloc[:, 1].tolist(),
+                    "lower_bound": forecast_ci.iloc[:, 0].tolist()
+                })
+            )
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"ARIMA Algorithm Error: {str(e)}")
+
+
+class GARCHStrategy(BaseStrategy):
+    def run(self, inputs: List[str]) -> StrategyResponse:
+        if len(inputs) != 1:
+            raise HTTPException(status_code=400, detail="GARCH requires exactly 1 ticker")
+        
+        ticker = inputs[0]
+        
+        try:
+            df = get_historical_data(ticker, period="1y")
+            
+            if len(df) < 100:
+                raise ValueError("Not enough data for GARCH (need 100+ days)")
+            
+            close_prices = df['Close']
+            
+            returns = close_prices.pct_change().dropna() * 100
+            
+            model = arch_model(returns, vol='Garch', p=1, q=1)
+            fitted_model = model.fit(disp='off')
+            
+            forecast_steps = 30
+            forecasts = fitted_model.forecast(horizon=forecast_steps)
+            
+            variance_forecast = forecasts.variance.values[-1, :]
+            volatility_forecast = np.sqrt(variance_forecast)
+            
+            current_volatility = float(returns.tail(20).std())
+            forecast_vol_1d = float(volatility_forecast[0])
+            forecast_vol_30d = float(volatility_forecast[-1])
+            avg_forecast_vol = float(volatility_forecast.mean())
+            
+            vol_5d = float(returns.tail(5).std())
+            vol_20d = float(returns.tail(20).std())
+            vol_60d = float(returns.tail(60).std())
+            
+            vol_percentile = (current_volatility - vol_60d) / vol_60d * 100
+            
+            regime = "Normal"
+            risk_level = "Medium"
+            
+            if vol_percentile > 50:
+                regime = "High Volatility"
+                risk_level = "High"
+            elif vol_percentile > 25:
+                regime = "Elevated Volatility"
+                risk_level = "Medium-High"
+            elif vol_percentile < -25:
+                regime = "Low Volatility"
+                risk_level = "Low"
+            
+            signal = "HOLD"
+            if forecast_vol_30d > current_volatility * 1.5:
+                signal = "REDUCE EXPOSURE"
+            elif forecast_vol_30d < current_volatility * 0.7:
+                signal = "INCREASE EXPOSURE"
+            
+            return StrategyResponse(
+                strategy_name="GARCH Volatility",
+                signal=signal,
+                metrics=convert_to_serializable({
+                    "current_volatility": round(current_volatility, 2),
+                    "forecast_1d": round(forecast_vol_1d, 2),
+                    "forecast_30d": round(forecast_vol_30d, 2),
+                    "vol_5d": round(vol_5d, 2),
+                    "vol_20d": round(vol_20d, 2),
+                    "vol_60d": round(vol_60d, 2),
+                    "regime": regime,
+                    "risk_level": risk_level,
+                    "alpha": round(float(fitted_model.params['alpha[1]']), 4),
+                    "beta": round(float(fitted_model.params['beta[1]']), 4)
+                }),
+                chart_data=convert_to_serializable({
+                    "realized_vol": returns.tail(60).abs().tolist(),
+                    "forecast_vol": volatility_forecast.tolist(),
+                    "returns": returns.tail(60).tolist()
+                })
+            )
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"GARCH Algorithm Error: {str(e)}")
+
+
+class VARStrategy(BaseStrategy):
+    def run(self, inputs: List[str]) -> StrategyResponse:
+        if len(inputs) < 2:
+            raise HTTPException(status_code=400, detail="VAR requires at least 2 tickers")
+        
+        if len(inputs) > 4:
+            raise HTTPException(status_code=400, detail="VAR limited to 4 tickers for performance")
+        
+        try:
+            dfs = []
+            for ticker in inputs:
+                df = get_historical_data(ticker, period="1y")
+                close_prices = df['Close']
+                returns = close_prices.pct_change().dropna() * 100
+                dfs.append(returns)
+            
+            combined_df = pd.concat(dfs, axis=1, join='inner')
+            combined_df.columns = inputs
+            
+            if len(combined_df) < 100:
+                raise ValueError("Not enough overlapping data (need 100+ days)")
+            
+            combined_df = combined_df.dropna()
+            
+            model = VAR(combined_df)
+            lag_order = model.select_order(maxlags=10)
+            optimal_lag = int(lag_order.aic)
+            
+            fitted_model = model.fit(optimal_lag)
+            
+            forecast_steps = 10
+            forecast = fitted_model.forecast(combined_df.values[-optimal_lag:], steps=forecast_steps)
+            
+            causality_results = {}
+            for i, ticker_a in enumerate(inputs):
+                for j, ticker_b in enumerate(inputs):
+                    if i != j:
+                        try:
+                            test_result = grangercausalitytests(
+                                combined_df[[ticker_b, ticker_a]], 
+                                maxlag=optimal_lag, 
+                                verbose=False
+                            )
+                            p_value = test_result[optimal_lag][0]['ssr_ftest'][1]
+                            causality_results[f"{ticker_a}→{ticker_b}"] = {
+                                "p_value": round(p_value, 4),
+                                "significant": p_value < 0.05
+                            }
+                        except:
+                            pass
+            
+            primary_ticker = inputs[0]
+            primary_forecast = forecast[:, 0]
+            
+            current_returns = {ticker: round(float(combined_df[ticker].iloc[-1]), 2) for ticker in inputs}
+            
+            forecast_returns = {
+                ticker: round(float(forecast[0, i]), 2) 
+                for i, ticker in enumerate(inputs)
+            }
+            
+            corr_matrix = combined_df.corr()
+            
+            avg_forecast = float(primary_forecast.mean())
+            signal = "HOLD"
+            
+            if avg_forecast > 1.0:
+                signal = "BUY"
+            elif avg_forecast > 2.0:
+                signal = "STRONG BUY"
+            elif avg_forecast < -1.0:
+                signal = "SELL"
+            elif avg_forecast < -2.0:
+                signal = "STRONG SELL"
+            
+            strongest_pairs = []
+            for i, ticker_a in enumerate(inputs):
+                for j, ticker_b in enumerate(inputs):
+                    if i < j:
+                        corr_val = corr_matrix.iloc[i, j]
+                        strongest_pairs.append({
+                            "pair": f"{ticker_a}-{ticker_b}",
+                            "correlation": round(float(corr_val), 3)
+                        })
+            
+            strongest_pairs.sort(key=lambda x: abs(x['correlation']), reverse=True)
+            
+            return StrategyResponse(
+                strategy_name="VAR Multi-Asset",
+                signal=signal,
+                metrics=convert_to_serializable({
+                    "primary_ticker": primary_ticker,
+                    "forecast_return": round(avg_forecast, 2),
+                    "optimal_lag": optimal_lag,
+                    "current_returns": current_returns,
+                    "forecast_returns": forecast_returns,
+                    "strongest_relationship": strongest_pairs[0] if strongest_pairs else None
+                }),
+                chart_data=convert_to_serializable({
+                    "forecast": primary_forecast.tolist(),
+                    "historical": combined_df[primary_ticker].tail(60).tolist()
+                }),
+                analysis_details=convert_to_serializable([
+                    {
+                        "type": "granger_causality",
+                        "results": causality_results
+                    },
+                    {
+                        "type": "correlations",
+                        "top_pairs": strongest_pairs[:3]
+                    }
+                ])
+            )
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"VAR Algorithm Error: {str(e)}")
+
+
 # ==========================================
-# 6. API ENDPOINTS
+# API ENDPOINTS
 # ==========================================
 
 strategies = {
@@ -559,7 +687,13 @@ strategies = {
     "sentiment": SentimentStrategy(),
     "macd": MACDStrategy(),
     "rsi": RSIStrategy(),
-    "bollinger": BollingerBandsStrategy()
+    "bollinger": BollingerBandsStrategy(),
+    "arima": ARIMAStrategy(),
+    "garch": GARCHStrategy(),
+    "var": VARStrategy(),
+    "rl": RLPortfolioStrategy(),
+    "ensemble": EnsembleStrategy(),
+    "wavelet": WaveletMLStrategy()
 }
 
 class StrategyRequest(BaseModel):
@@ -568,48 +702,23 @@ class StrategyRequest(BaseModel):
 
 @app.get("/")
 def health_check():
-    return {"status": "online", "models_loaded": list(ml_models.keys())}
+    return {"status": "online", "models_loaded": list(ml_models.keys()), "version": "2.0.0"}
 
 @app.get("/strategies")
 def list_strategies():
-    """Returns all available strategies for frontend to consume"""
     return {
         "strategies": [
-            {
-                "id": "macd",
-                "name": "MACD Momentum",
-                "category": "technical",
-                "inputs": 1,
-                "risk": "Low"
-            },
-            {
-                "id": "rsi",
-                "name": "RSI Oscillator",
-                "category": "technical",
-                "inputs": 1,
-                "risk": "Low"
-            },
-            {
-                "id": "bollinger",
-                "name": "Bollinger Bands",
-                "category": "technical",
-                "inputs": 1,
-                "risk": "Medium"
-            },
-            {
-                "id": "pairs",
-                "name": "Statistical Arbitrage",
-                "category": "statistical",
-                "inputs": 2,
-                "risk": "Medium"
-            },
-            {
-                "id": "sentiment",
-                "name": "AI Sentiment Analysis",
-                "category": "ai",
-                "inputs": 1,
-                "risk": "High"
-            }
+            {"id": "macd", "name": "MACD Momentum", "category": "technical", "inputs": 1, "risk": "Low"},
+            {"id": "rsi", "name": "RSI Oscillator", "category": "technical", "inputs": 1, "risk": "Low"},
+            {"id": "bollinger", "name": "Bollinger Bands", "category": "technical", "inputs": 1, "risk": "Medium"},
+            {"id": "pairs", "name": "Statistical Arbitrage", "category": "statistical", "inputs": 2, "risk": "Medium"},
+            {"id": "sentiment", "name": "AI Sentiment Analysis", "category": "ai", "inputs": 1, "risk": "High"},
+            {"id": "arima", "name": "ARIMA Forecast", "category": "timeseries", "inputs": 1, "risk": "Medium"},
+            {"id": "garch", "name": "GARCH Volatility", "category": "timeseries", "inputs": 1, "risk": "Medium"},
+            {"id": "var", "name": "VAR Multi-Asset", "category": "timeseries", "inputs": "2-4", "risk": "High"},
+            {"id": "rl", "name": "Q-Learning Portfolio", "category": "advanced", "inputs": 1, "risk": "High"},
+            {"id": "ensemble", "name": "Ensemble Stacking", "category": "advanced", "inputs": 1, "risk": "Medium"},
+            {"id": "wavelet", "name": "Wavelet + ML", "category": "advanced", "inputs": 1, "risk": "High"}
         ]
     }
 

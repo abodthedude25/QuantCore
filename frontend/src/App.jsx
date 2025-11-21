@@ -12,8 +12,18 @@ import {
   Server,
   LineChart,
   Gauge,
-  Target
+  Target,
+  TrendingUpDown,
+  Waves,
+  Network,
+  Brain,
+  Layers
 } from 'lucide-react';
+
+// Import visualizer components
+import { RLVisualizer } from './components/RLVisualizer';
+import { EnsembleVisualizer } from './components/EnsembleVisualizer';
+import { WaveletVisualizer } from './components/WaveletVisualizer';
 
 // --- 1. CONFIGURATION & TYPES ---
 
@@ -62,6 +72,60 @@ const STATIC_STRATEGIES = [
     risk: 'High',
     category: 'Machine Learning',
     inputs: ['Target Ticker']
+  },
+  {
+    id: 'arima',
+    name: 'ARIMA Forecast',
+    icon: <TrendingUpDown className="w-5 h-5" />,
+    description: 'AutoRegressive Integrated Moving Average model. Forecasts future prices using past values, trends, and errors.',
+    risk: 'Medium',
+    category: 'Time Series Models',
+    inputs: ['Target Ticker']
+  },
+  {
+    id: 'garch',
+    name: 'GARCH Volatility',
+    icon: <Waves className="w-5 h-5" />,
+    description: 'Models volatility clustering where high volatility follows high volatility. Predicts future volatility regimes.',
+    risk: 'Medium',
+    category: 'Time Series Models',
+    inputs: ['Target Ticker']
+  },
+  {
+    id: 'var',
+    name: 'VAR Multi-Asset',
+    icon: <Network className="w-5 h-5" />,
+    description: 'Vector Autoregression captures dynamic relationships between multiple assets. Shows Granger causality and cross-asset impacts.',
+    risk: 'High',
+    category: 'Time Series Models',
+    inputs: ['Ticker 1', 'Ticker 2', 'Ticker 3 (optional)', 'Ticker 4 (optional)']
+  },
+  {
+    id: 'rl',
+    name: 'Q-Learning Portfolio',
+    icon: <Brain className="w-5 h-5" />,
+    description: 'Reinforcement learning agent that learns optimal position sizing (LONG/NEUTRAL/SHORT) through trial and error. Maximizes cumulative rewards.',
+    risk: 'High',
+    category: 'Advanced Algorithms',
+    inputs: ['Target Ticker']
+  },
+  {
+    id: 'ensemble',
+    name: 'Ensemble Stacking',
+    icon: <Layers className="w-5 h-5" />,
+    description: 'Combines predictions from 5 algorithms (ARIMA, MACD, RSI, MA Crossover, Bollinger Bands) using weighted voting for robust signals.',
+    risk: 'Medium',
+    category: 'Advanced Algorithms',
+    inputs: ['Target Ticker']
+  },
+  {
+    id: 'wavelet',
+    name: 'Wavelet + ML',
+    icon: <Waves className="w-5 h-5" />,
+    description: 'Decomposes price signal into frequency components (trend vs noise) using Daubechies wavelets, then applies Random Forest ML to each component.',
+    risk: 'High',
+    category: 'Advanced Algorithms',
+    inputs: ['Target Ticker']
   }
 ];
 
@@ -85,28 +149,32 @@ const RiskBadge = ({ level }) => {
 
 const SignalBadge = ({ signal }) => {
   const getColor = () => {
-    if (signal.includes('BUY')) return 'bg-green-500/20 text-green-400 border-green-500/50';
-    if (signal.includes('SELL')) return 'bg-red-500/20 text-red-400 border-red-500/50';
+    if (signal.includes('BUY') || signal.includes('INCREASE') || signal.includes('LONG')) return 'bg-green-500/20 text-green-400 border-green-500/50';
+    if (signal.includes('SELL') || signal.includes('REDUCE') || signal.includes('SHORT')) return 'bg-red-500/20 text-red-400 border-red-500/50';
+    if (signal.includes('BULLISH')) return 'bg-green-500/20 text-green-400 border-green-500/50';
+    if (signal.includes('BEARISH')) return 'bg-red-500/20 text-red-400 border-red-500/50';
     return 'bg-slate-500/20 text-slate-400 border-slate-500/50';
   };
   
   return (
     <div className={`px-4 py-2 rounded-lg border-2 ${getColor()} font-bold text-lg flex items-center gap-2`}>
-      {signal.includes('BUY') && <TrendingUp className="w-5 h-5" />}
-      {signal.includes('SELL') && <TrendingDown className="w-5 h-5" />}
+      {(signal.includes('BUY') || signal.includes('BULLISH') || signal.includes('INCREASE') || signal.includes('LONG')) && <TrendingUp className="w-5 h-5" />}
+      {(signal.includes('SELL') || signal.includes('BEARISH') || signal.includes('REDUCE') || signal.includes('SHORT')) && <TrendingDown className="w-5 h-5" />}
       {signal}
     </div>
   );
 };
 
-const InputField = ({ label, value, onChange }) => (
+const InputField = ({ label, value, onChange, optional }) => (
   <div className="flex flex-col gap-1">
-    <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">{label}</label>
+    <label className="text-xs text-slate-400 font-bold uppercase tracking-wider">
+      {label} {optional && <span className="text-slate-600">(optional)</span>}
+    </label>
     <input 
       value={value}
       onChange={(e) => onChange(e.target.value.toUpperCase())}
       className="bg-slate-900 border border-slate-700 rounded p-2 text-white font-mono focus:border-blue-500 outline-none transition-colors"
-      placeholder="e.g., AAPL"
+      placeholder={optional ? "Optional" : "e.g., AAPL"}
     />
   </div>
 );
@@ -234,12 +302,10 @@ const RSIVisualizer = ({ data }) => {
   const { metrics, chart_data } = data;
   const rsi_value = metrics.rsi_value;
   
-  // Calculate RSI gauge position
   const gaugeRotation = (rsi_value / 100) * 180 - 90;
   
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
-      {/* Signal & Gauge */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
           <SignalBadge signal={data.signal} />
@@ -257,13 +323,11 @@ const RSIVisualizer = ({ data }) => {
           </div>
         </div>
 
-        {/* RSI Gauge */}
         <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
           <div className="text-center">
             <div className="text-slate-400 text-xs uppercase font-bold mb-2">RSI Value</div>
             <div className="text-5xl font-bold font-mono text-white mb-2">{rsi_value}</div>
             
-            {/* Visual Gauge */}
             <div className="relative w-full h-24 mt-4">
               <div className="absolute inset-x-0 bottom-0 h-12 rounded-full" style={{
                 background: 'linear-gradient(to right, rgb(34, 197, 94) 0%, rgb(234, 179, 8) 50%, rgb(239, 68, 68) 100%)'
@@ -275,7 +339,6 @@ const RSIVisualizer = ({ data }) => {
                 <span>70</span>
                 <span>100</span>
               </div>
-              {/* Needle */}
               <div 
                 className="absolute bottom-6 left-1/2 w-1 h-8 bg-white rounded-full transform origin-bottom transition-transform duration-500"
                 style={{ 
@@ -288,7 +351,6 @@ const RSIVisualizer = ({ data }) => {
         </div>
       </div>
 
-      {/* RSI Chart & Price Chart */}
       <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
         <h4 className="text-slate-300 font-bold mb-4 flex items-center gap-2">
           <Gauge className="w-4 h-4" /> RSI History (60 Days)
@@ -299,7 +361,6 @@ const RSIVisualizer = ({ data }) => {
             label="RSI"
             color="rgb(168, 85, 247)"
           />
-          {/* Overbought/Oversold Lines */}
           <div className="absolute inset-0 pointer-events-none">
             <div className="absolute w-full border-t border-red-500/30" style={{ top: '20%' }}></div>
             <div className="absolute w-full border-t border-green-500/30" style={{ top: '80%' }}></div>
@@ -312,14 +373,12 @@ const RSIVisualizer = ({ data }) => {
         </div>
       </div>
 
-      {/* Current Metrics */}
       <div className="grid grid-cols-3 gap-4">
         <MetricCard title="Current Price" value={`$${metrics.current_price}`} />
         <MetricCard title="Oversold" value="< 30" subtext="Buy Zone" />
         <MetricCard title="Overbought" value="> 70" subtext="Sell Zone" />
       </div>
 
-      {/* Interpretation */}
       <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
         <h4 className="text-slate-300 font-bold mb-3">💡 Interpretation</h4>
         <ul className="space-y-2 text-slate-400 text-sm">
@@ -340,7 +399,6 @@ const BollingerBandsVisualizer = ({ data }) => {
   
   return (
     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
-      {/* Signal & Key Metrics */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <div className="bg-slate-800 border border-slate-700 rounded-xl p-6 flex items-center justify-center">
           <SignalBadge signal={data.signal} />
@@ -360,13 +418,11 @@ const BollingerBandsVisualizer = ({ data }) => {
         </div>
       </div>
 
-      {/* Bollinger Bands Chart */}
       <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
         <h4 className="text-slate-300 font-bold mb-4 flex items-center gap-2">
           <Target className="w-4 h-4" /> Price vs Bollinger Bands (60 Days)
         </h4>
         <div className="bg-slate-900 rounded-lg p-4 h-64 relative">
-          {/* Multi-line overlay chart */}
           <div className="relative w-full h-full">
             <div className="absolute inset-0" style={{ opacity: 0.3 }}>
               <SimpleLineChart data={chart_data?.upper || []} label="Upper" color="rgb(239, 68, 68)" />
@@ -402,7 +458,6 @@ const BollingerBandsVisualizer = ({ data }) => {
         </div>
       </div>
 
-      {/* Band Values */}
       <div className="grid grid-cols-4 gap-4">
         <MetricCard title="Upper Band" value={`$${metrics.upper_band}`} />
         <MetricCard title="Middle Band" value={`$${metrics.middle_band}`} />
@@ -410,7 +465,6 @@ const BollingerBandsVisualizer = ({ data }) => {
         <MetricCard title="Current" value={`$${metrics.current_price}`} highlight={true} />
       </div>
 
-      {/* %B Indicator */}
       <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
         <h4 className="text-slate-300 font-bold mb-3">%B Indicator</h4>
         <div className="flex items-center gap-4">
@@ -436,7 +490,6 @@ const BollingerBandsVisualizer = ({ data }) => {
         </div>
       </div>
 
-      {/* Interpretation */}
       <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
         <h4 className="text-slate-300 font-bold mb-3">💡 Interpretation</h4>
         <ul className="space-y-2 text-slate-400 text-sm">
@@ -512,6 +565,434 @@ const SentimentVisualizer = ({ data }) => {
   );
 };
 
+const ARIMAVisualizer = ({ data }) => {
+  if (!data) return null;
+  
+  const { metrics, chart_data } = data;
+  
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="md:col-span-2 bg-slate-800 border border-slate-700 rounded-xl p-6 flex items-center justify-center">
+          <SignalBadge signal={data.signal} />
+        </div>
+        <MetricCard 
+          title="Expected Return" 
+          value={`${metrics.expected_return > 0 ? '+' : ''}${metrics.expected_return}%`}
+          subtext="30-day forecast"
+          highlight={Math.abs(metrics.expected_return) > 5}
+        />
+        <MetricCard 
+          title="Confidence" 
+          value={metrics.confidence}
+          subtext={`AIC: ${metrics.model_aic}`}
+        />
+      </div>
+
+      <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+        <h4 className="text-slate-300 font-bold mb-4 flex items-center gap-2">
+          <TrendingUpDown className="w-4 h-4" /> Historical Price & 30-Day Forecast
+        </h4>
+        <div className="bg-slate-900 rounded-lg p-4 h-64 relative">
+          <div className="relative w-full h-full">
+            <div className="absolute inset-0">
+              <SimpleLineChart 
+                data={chart_data?.historical || []} 
+                label="Historical"
+                color="rgb(148, 163, 184)"
+              />
+            </div>
+            <div className="absolute inset-0" style={{ opacity: 0.2 }}>
+              <SimpleLineChart 
+                data={chart_data?.upper_bound || []} 
+                label="Upper CI"
+                color="rgb(34, 197, 94)"
+              />
+            </div>
+            <div className="absolute inset-0" style={{ opacity: 0.2 }}>
+              <SimpleLineChart 
+                data={chart_data?.lower_bound || []} 
+                label="Lower CI"
+                color="rgb(239, 68, 68)"
+              />
+            </div>
+            <div className="absolute inset-0">
+              <SimpleLineChart 
+                data={chart_data?.forecast || []} 
+                label="Forecast"
+                color="rgb(59, 130, 246)"
+              />
+            </div>
+          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-slate-500"></div>
+            <span className="text-slate-400">Historical Price</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+            <span className="text-slate-400">ARIMA Forecast</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4">
+        <MetricCard 
+          title="Current Price" 
+          value={`$${metrics.current_price}`}
+          subtext="Today"
+        />
+        <MetricCard 
+          title="1-Day Forecast" 
+          value={`$${metrics.forecast_1d}`}
+          subtext="Tomorrow"
+          highlight={true}
+        />
+        <MetricCard 
+          title="30-Day Forecast" 
+          value={`$${metrics.forecast_30d}`}
+          subtext="1 Month"
+          highlight={true}
+        />
+      </div>
+
+      <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+        <h4 className="text-slate-300 font-bold mb-3">📊 Model Information</h4>
+        <div className="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <span className="text-slate-400">Model Type:</span>
+            <span className="text-white ml-2 font-mono">ARIMA(1,1,1)</span>
+          </div>
+          <div>
+            <span className="text-slate-400">AIC Score:</span>
+            <span className="text-white ml-2 font-mono">{metrics.model_aic}</span>
+          </div>
+          <div>
+            <span className="text-slate-400">BIC Score:</span>
+            <span className="text-white ml-2 font-mono">{metrics.model_bic}</span>
+          </div>
+          <div>
+            <span className="text-slate-400">Forecast Horizon:</span>
+            <span className="text-white ml-2 font-mono">30 days</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+        <h4 className="text-slate-300 font-bold mb-3">💡 Interpretation</h4>
+        <ul className="space-y-2 text-slate-400 text-sm">
+          <li>• <strong>ARIMA:</strong> AutoRegressive Integrated Moving Average - models time series patterns</li>
+          <li>• <strong>Forecast:</strong> Predicted price based on historical patterns and trends</li>
+          <li>• <strong>Confidence Bands:</strong> Shaded area shows uncertainty range (wider = less certain)</li>
+          <li>• <strong>Lower AIC/BIC:</strong> Better model fit to historical data</li>
+          <li>• <strong>Limitations:</strong> Cannot predict external shocks or regime changes</li>
+        </ul>
+      </div>
+    </div>
+  );
+};
+
+const GARCHVisualizer = ({ data }) => {
+  if (!data) return null;
+  
+  const { metrics, chart_data } = data;
+  
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="md:col-span-2 bg-slate-800 border border-slate-700 rounded-xl p-6 flex items-center justify-center">
+          <SignalBadge signal={data.signal} />
+        </div>
+        <MetricCard 
+          title="Volatility Regime" 
+          value={metrics.regime}
+          subtext={`Risk: ${metrics.risk_level}`}
+          highlight={metrics.risk_level === "High"}
+        />
+        <MetricCard 
+          title="Current Vol" 
+          value={`${metrics.current_volatility}%`}
+          subtext="20-day realized"
+        />
+      </div>
+
+      <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+        <h4 className="text-slate-300 font-bold mb-4 flex items-center gap-2">
+          <Waves className="w-4 h-4" /> Realized vs Forecast Volatility
+        </h4>
+        <div className="bg-slate-900 rounded-lg p-4 h-64 relative">
+          <div className="relative w-full h-full">
+            <div className="absolute inset-0">
+              <SimpleLineChart 
+                data={chart_data?.realized_vol || []} 
+                label="Realized"
+                color="rgb(148, 163, 184)"
+              />
+            </div>
+            <div className="absolute inset-0">
+              <SimpleLineChart 
+                data={chart_data?.forecast_vol || []} 
+                label="Forecast"
+                color="rgb(234, 179, 8)"
+              />
+            </div>
+          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-slate-500"></div>
+            <span className="text-slate-400">Realized Volatility (60 days)</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+            <span className="text-slate-400">GARCH Forecast (30 days)</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 gap-4">
+        <MetricCard 
+          title="5-Day Vol" 
+          value={`${metrics.vol_5d}%`}
+          subtext="Very Short Term"
+        />
+        <MetricCard 
+          title="20-Day Vol" 
+          value={`${metrics.vol_20d}%`}
+          subtext="Short Term"
+        />
+        <MetricCard 
+          title="60-Day Vol" 
+          value={`${metrics.vol_60d}%`}
+          subtext="Medium Term"
+        />
+        <MetricCard 
+          title="30-Day Forecast" 
+          value={`${metrics.forecast_30d}%`}
+          subtext="Predicted"
+          highlight={true}
+        />
+      </div>
+
+      <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+        <h4 className="text-slate-300 font-bold mb-4">GARCH(1,1) Model Parameters</h4>
+        <div className="grid grid-cols-2 gap-6">
+          <div className="bg-slate-900 rounded-lg p-4">
+            <div className="text-slate-400 text-xs uppercase mb-2">Alpha (ARCH)</div>
+            <div className="text-3xl font-bold font-mono text-white">{metrics.alpha}</div>
+            <div className="text-xs text-slate-500 mt-2">
+              Weight on recent shocks
+            </div>
+          </div>
+          <div className="bg-slate-900 rounded-lg p-4">
+            <div className="text-slate-400 text-xs uppercase mb-2">Beta (GARCH)</div>
+            <div className="text-3xl font-bold font-mono text-white">{metrics.beta}</div>
+            <div className="text-xs text-slate-500 mt-2">
+              Weight on past volatility
+            </div>
+          </div>
+        </div>
+        <div className="mt-4 text-sm text-slate-400">
+          <strong>Persistence:</strong> α + β = {(metrics.alpha + metrics.beta).toFixed(4)}
+          {(metrics.alpha + metrics.beta) > 0.95 && 
+            <span className="ml-2 text-yellow-400">(High persistence - shocks last long)</span>
+          }
+        </div>
+      </div>
+
+      <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+        <h4 className="text-slate-300 font-bold mb-4 flex items-center gap-2">
+          <BarChart3 className="w-4 h-4" /> Returns Distribution (Last 60 Days)
+        </h4>
+        <div className="bg-slate-900 rounded-lg p-4 h-32">
+          <SimpleLineChart 
+            data={chart_data?.returns || []} 
+            label="Daily Returns %"
+            color="rgb(168, 85, 247)"
+          />
+        </div>
+      </div>
+
+      <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+        <h4 className="text-slate-300 font-bold mb-3">💡 Interpretation</h4>
+        <ul className="space-y-2 text-slate-400 text-sm">
+          <li>• <strong>GARCH:</strong> Captures volatility clustering - calm periods vs turbulent periods</li>
+          <li>• <strong>High Volatility:</strong> Higher risk, wider price swings, reduce position size</li>
+          <li>• <strong>Low Volatility:</strong> Calmer markets, potentially increase exposure</li>
+          <li>• <strong>Alpha:</strong> Reaction to recent shocks (ARCH effect)</li>
+          <li>• <strong>Beta:</strong> Persistence of volatility (GARCH effect)</li>
+          <li>• <strong>Use Case:</strong> Risk management, options pricing, portfolio sizing</li>
+        </ul>
+      </div>
+    </div>
+  );
+};
+
+const VARVisualizer = ({ data }) => {
+  if (!data) return null;
+  
+  const { metrics, chart_data, analysis_details } = data;
+  
+  const grangerData = analysis_details?.find(d => d.type === 'granger_causality')?.results || {};
+  const corrData = analysis_details?.find(d => d.type === 'correlations')?.top_pairs || [];
+  
+  return (
+    <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="bg-slate-800 border border-slate-700 rounded-xl p-6 flex items-center justify-center">
+          <SignalBadge signal={data.signal} />
+        </div>
+        <MetricCard 
+          title="Primary Ticker" 
+          value={metrics.primary_ticker}
+          subtext="Lead indicator"
+          highlight={true}
+        />
+        <MetricCard 
+          title="Forecast Return" 
+          value={`${metrics.forecast_return > 0 ? '+' : ''}${metrics.forecast_return}%`}
+          subtext="10-day prediction"
+          highlight={Math.abs(metrics.forecast_return) > 1}
+        />
+      </div>
+
+      <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+        <h4 className="text-slate-300 font-bold mb-4 flex items-center gap-2">
+          <Network className="w-4 h-4" /> {metrics.primary_ticker} Forecast (10 Days)
+        </h4>
+        <div className="bg-slate-900 rounded-lg p-4 h-48 relative">
+          <div className="relative w-full h-full">
+            <div className="absolute inset-0" style={{ opacity: 0.5 }}>
+              <SimpleLineChart 
+                data={chart_data?.historical || []} 
+                label="Historical"
+                color="rgb(148, 163, 184)"
+              />
+            </div>
+            <div className="absolute inset-0">
+              <SimpleLineChart 
+                data={chart_data?.forecast || []} 
+                label="VAR Forecast"
+                color="rgb(59, 130, 246)"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+        <h4 className="text-slate-300 font-bold mb-4">Multi-Asset Returns</h4>
+        <div className="grid grid-cols-2 gap-6">
+          <div>
+            <div className="text-slate-400 text-xs uppercase mb-3">Current Returns (%)</div>
+            <div className="space-y-2">
+              {Object.entries(metrics.current_returns).map(([ticker, value]) => (
+                <div key={ticker} className="flex justify-between items-center bg-slate-900 rounded p-2">
+                  <span className="font-mono text-sm text-slate-300">{ticker}</span>
+                  <span className={`font-mono font-bold ${value > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {value > 0 ? '+' : ''}{value}%
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="text-slate-400 text-xs uppercase mb-3">Forecast Returns (%)</div>
+            <div className="space-y-2">
+              {Object.entries(metrics.forecast_returns).map(([ticker, value]) => (
+                <div key={ticker} className="flex justify-between items-center bg-slate-900 rounded p-2">
+                  <span className="font-mono text-sm text-slate-300">{ticker}</span>
+                  <span className={`font-mono font-bold ${value > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {value > 0 ? '+' : ''}{value}%
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {corrData.length > 0 && (
+        <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+          <h4 className="text-slate-300 font-bold mb-4">Asset Correlations</h4>
+          <div className="space-y-2">
+            {corrData.map((item, idx) => (
+              <div key={idx} className="flex items-center justify-between bg-slate-900 rounded p-3">
+                <span className="text-slate-300 font-mono">{item.pair}</span>
+                <div className="flex items-center gap-3">
+                  <div className="w-32 h-2 bg-slate-700 rounded-full overflow-hidden">
+                    <div 
+                      className={`h-full ${item.correlation > 0 ? 'bg-green-500' : 'bg-red-500'}`}
+                      style={{ width: `${Math.abs(item.correlation) * 100}%` }}
+                    ></div>
+                  </div>
+                  <span className="text-white font-bold w-16 text-right">{item.correlation}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {Object.keys(grangerData).length > 0 && (
+        <div className="bg-slate-800 border border-slate-700 rounded-xl p-6">
+          <h4 className="text-slate-300 font-bold mb-4">Granger Causality Tests</h4>
+          <div className="text-xs text-slate-400 mb-3">
+            Tests whether one asset's past values help predict another's returns
+          </div>
+          <div className="space-y-2">
+            {Object.entries(grangerData).map(([relationship, result]) => (
+              <div key={relationship} className="flex items-center justify-between bg-slate-900 rounded p-3">
+                <span className="text-slate-300 font-mono text-sm">{relationship}</span>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-slate-400">p-value: {result.p_value}</span>
+                  <span className={`px-2 py-1 rounded text-xs font-bold ${result.significant ? 'bg-green-500/20 text-green-400' : 'bg-slate-700 text-slate-400'}`}>
+                    {result.significant ? 'Significant' : 'Not Significant'}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+        <h4 className="text-slate-300 font-bold mb-3">📊 Model Information</h4>
+        <div className="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <span className="text-slate-400">Model Type:</span>
+            <span className="text-white ml-2 font-mono">VAR({metrics.optimal_lag})</span>
+          </div>
+          <div>
+            <span className="text-slate-400">Optimal Lag:</span>
+            <span className="text-white ml-2 font-mono">{metrics.optimal_lag} periods</span>
+          </div>
+        </div>
+        {metrics.strongest_relationship && (
+          <div className="mt-3 text-sm">
+            <span className="text-slate-400">Strongest Relationship:</span>
+            <span className="text-white ml-2">
+              {metrics.strongest_relationship.pair} ({metrics.strongest_relationship.correlation})
+            </span>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-slate-900/50 border border-slate-800 rounded-xl p-6">
+        <h4 className="text-slate-300 font-bold mb-3">💡 Interpretation</h4>
+        <ul className="space-y-2 text-slate-400 text-sm">
+          <li>• <strong>VAR:</strong> Captures how multiple assets influence each other over time</li>
+          <li>• <strong>Granger Causality:</strong> If A→B is significant, A's past helps predict B</li>
+          <li>• <strong>Correlation:</strong> Positive = move together, Negative = move opposite</li>
+          <li>• <strong>Lag Order:</strong> Number of past periods used for prediction</li>
+          <li>• <strong>Use Case:</strong> Portfolio construction, risk hedging, sector rotation</li>
+        </ul>
+      </div>
+    </div>
+  );
+};
+
 // --- 4. MAIN APP ---
 
 export default function App() {
@@ -524,7 +1005,6 @@ export default function App() {
 
   const activeStrategy = STATIC_STRATEGIES.find(s => s.id === activeStrategyId);
 
-  // Check backend server status
   useEffect(() => {
     const checkServer = async () => {
       try {
@@ -538,7 +1018,7 @@ export default function App() {
     };
     
     checkServer();
-    const interval = setInterval(checkServer, 30000); // Check every 30 seconds
+    const interval = setInterval(checkServer, 30000);
     
     return () => clearInterval(interval);
   }, []);
@@ -549,14 +1029,12 @@ export default function App() {
     setError(null);
 
     try {
-      // Validate inputs
       const validInputs = inputs.filter(ticker => ticker.trim() !== '');
       
       if (validInputs.length === 0) {
         throw new Error('Please enter at least one ticker symbol');
       }
 
-      // Make API request to backend
       const response = await fetch(`${API_BASE_URL}/execute`, {
         method: 'POST',
         headers: { 
@@ -580,12 +1058,22 @@ export default function App() {
       console.error('API Error:', err);
       setError(err.message);
       
-      // Show user-friendly error message
       if (err.message.includes('fetch')) {
         setError('Cannot connect to backend. Make sure the Python server is running on port 8000.');
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const getDefaultInputs = (strategyId) => {
+    switch(strategyId) {
+      case 'pairs':
+        return ['KO', 'PEP'];
+      case 'var':
+        return ['AAPL', 'MSFT', '', ''];
+      default:
+        return ['AAPL'];
     }
   };
 
@@ -605,8 +1093,7 @@ export default function App() {
         </div>
 
         <div className="flex-1 overflow-y-auto py-6 px-4 space-y-6">
-          {/* Group by category */}
-          {['Technical Indicators', 'Statistical Models', 'Machine Learning'].map(category => {
+          {['Technical Indicators', 'Statistical Models', 'Machine Learning', 'Time Series Models', 'Advanced Algorithms'].map(category => {
             const algos = STATIC_STRATEGIES.filter(s => s.category === category);
             if (algos.length === 0) return null;
             
@@ -623,7 +1110,7 @@ export default function App() {
                         setActiveStrategyId(algo.id); 
                         setResult(null);
                         setError(null);
-                        setInputs(algo.inputs.length === 2 ? ['KO', 'PEP'] : ['AAPL']); 
+                        setInputs(getDefaultInputs(algo.id)); 
                       }}
                       className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all ${activeStrategyId === algo.id ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
                     >
@@ -644,7 +1131,7 @@ export default function App() {
             </div>
             {!serverStatus && (
               <div className="mx-2 mt-2 p-2 bg-red-500/10 border border-red-500/30 rounded text-xs text-red-400">
-                Run: python backend.py
+                Run: python trading_api.py
               </div>
             )}
           </div>
@@ -678,7 +1165,8 @@ export default function App() {
                                 const newInputs = [...inputs];
                                 newInputs[idx] = val;
                                 setInputs(newInputs);
-                            }} 
+                            }}
+                            optional={label.includes('optional')}
                         />
                     </div>
                 ))}
@@ -693,7 +1181,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* Error Display */}
             {error && (
               <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-6 flex items-start gap-4">
                 <AlertTriangle className="w-6 h-6 text-red-400 flex-shrink-0 mt-1" />
@@ -704,7 +1191,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Results Display */}
             {result && !error && (
                 <div className="border-t border-slate-800 pt-8">
                     {activeStrategyId === 'macd' && <MACDVisualizer data={result} />}
@@ -712,6 +1198,12 @@ export default function App() {
                     {activeStrategyId === 'bollinger' && <BollingerBandsVisualizer data={result} />}
                     {activeStrategyId === 'pairs' && <PairsVisualizer data={result} />}
                     {activeStrategyId === 'sentiment' && <SentimentVisualizer data={result} />}
+                    {activeStrategyId === 'arima' && <ARIMAVisualizer data={result} />}
+                    {activeStrategyId === 'garch' && <GARCHVisualizer data={result} />}
+                    {activeStrategyId === 'var' && <VARVisualizer data={result} />}
+                    {activeStrategyId === 'rl' && <RLVisualizer data={result} />}
+                    {activeStrategyId === 'ensemble' && <EnsembleVisualizer data={result} />}
+                    {activeStrategyId === 'wavelet' && <WaveletVisualizer data={result} />}
                 </div>
             )}
 
