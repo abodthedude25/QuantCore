@@ -11,6 +11,19 @@ from strategies.base import StrategyResponse
 from strategies.reinforcement_learning import RLPortfolioStrategy
 from strategies.ensemble import EnsembleStrategy
 from strategies.wavelet import WaveletMLStrategy
+from strategies.random_forest import RandomForestStrategy
+from strategies.svm import SVMStrategy
+from strategies.fama_french import FamaFrenchStrategy
+from strategies.shap_explainer import SHAPExplainerStrategy
+
+# XGBoost is optional (requires libomp on Mac)
+try:
+    from strategies.xgboost_strategy import XGBoostStrategy
+    XGBOOST_AVAILABLE = True
+except (ImportError, Exception) as e:
+    print(f"⚠️ XGBoost not available: {e}")
+    XGBOOST_AVAILABLE = False
+    XGBoostStrategy = None
 
 # Import existing strategies (inline for now, but could be modularized)
 from strategies.utils import (
@@ -677,6 +690,11 @@ class VARStrategy(BaseStrategy):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"VAR Algorithm Error: {str(e)}")
 
+
+# ==========================================
+# STATIC STRATEGIES LIST (for UI)
+# ==========================================
+
 STATIC_STRATEGIES = [
     {"id": "macd", "name": "MACD Momentum", "risk": "Low", "inputs": 1},
     {"id": "rsi", "name": "RSI Oscillator", "risk": "Low", "inputs": 1},
@@ -686,13 +704,23 @@ STATIC_STRATEGIES = [
     {"id": "garch", "name": "GARCH Volatility", "risk": "Medium", "inputs": 1},
     {"id": "rl", "name": "Q-Learning Portfolio", "risk": "High", "inputs": 1},
     {"id": "ensemble", "name": "Ensemble Stacking", "risk": "Medium", "inputs": 1},
-    {"id": "wavelet", "name": "Wavelet + ML", "risk": "High", "inputs": 1}
+    {"id": "wavelet", "name": "Wavelet + ML", "risk": "High", "inputs": 1},
+    {"id": "random_forest", "name": "Random Forest", "risk": "Medium", "inputs": 1},
+    {"id": "svm", "name": "SVM Classifier", "risk": "Medium", "inputs": 1},
+    {"id": "fama_french", "name": "Fama-French 5-Factor", "risk": "Low", "inputs": 1},
+    {"id": "shap", "name": "SHAP Explainer", "risk": "Medium", "inputs": 1}
 ]
+
+# Add XGBoost to static strategies if available
+if XGBOOST_AVAILABLE:
+    STATIC_STRATEGIES.insert(10, {"id": "xgboost", "name": "XGBoost", "risk": "Medium", "inputs": 1})
 
 
 from datetime import datetime, timedelta
 from typing import List, Dict, Any
 import pandas as pd
+
+
 class BacktestResult(BaseModel):
     strategy_id: str
     strategy_name: str
@@ -705,9 +733,11 @@ class BacktestResult(BaseModel):
     avg_confidence: float
     risk_level: str
 
+
 class CompareRequest(BaseModel):
     ticker: str
-    period: str  # "1w", "1m", "3m", "6m", "1y"
+    period: str
+
 
 class CompareResponse(BaseModel):
     ticker: str
@@ -721,18 +751,17 @@ class CompareResponse(BaseModel):
     best_accuracy: float
     best_return: float
 
+
 def backtest_strategy(strategy_id: str, strategy: BaseStrategy, ticker: str, lookback_days: int) -> BacktestResult:
     """
     Backtest a strategy over historical data
     """
     try:
-        # Get historical data
         df = get_historical_data(ticker, period="2y")
         
         if len(df) < lookback_days:
             lookback_days = len(df)
         
-        # Use data from lookback period
         test_data = df.tail(lookback_days)
         
         signals = []
@@ -740,16 +769,13 @@ def backtest_strategy(strategy_id: str, strategy: BaseStrategy, ticker: str, loo
         total = 0
         confidences = []
         
-        # Simple backtesting: check if signal direction matches next day's move
         for i in range(len(test_data) - 1):
             try:
-                # Run strategy on current data
                 result = strategy.run([ticker])
                 
                 signal = result.signal
                 signals.append(signal)
                 
-                # Get confidence if available
                 if hasattr(result.metrics, 'get'):
                     conf = result.metrics.get('confidence', 0.5)
                 elif isinstance(result.metrics, dict):
@@ -758,7 +784,6 @@ def backtest_strategy(strategy_id: str, strategy: BaseStrategy, ticker: str, loo
                     conf = 0.5
                 confidences.append(float(conf) if isinstance(conf, (int, float)) else 0.5)
                 
-                # Check if prediction was correct
                 current_price = test_data.iloc[i]['Close']
                 next_price = test_data.iloc[i + 1]['Close']
                 actual_move = 'UP' if next_price > current_price else 'DOWN'
@@ -773,16 +798,13 @@ def backtest_strategy(strategy_id: str, strategy: BaseStrategy, ticker: str, loo
             except Exception as e:
                 continue
         
-        # Calculate metrics
         accuracy = (correct / total * 100) if total > 0 else 0
         win_rate = accuracy
         
-        # Calculate cumulative return (simplified)
         start_price = float(test_data.iloc[0]['Close'])
         end_price = float(test_data.iloc[-1]['Close'])
         cumulative_return = ((end_price - start_price) / start_price) * 100
         
-        # Get strategy metadata
         strategy_info = next((s for s in STATIC_STRATEGIES if s['id'] == strategy_id), None)
         
         return BacktestResult(
@@ -814,6 +836,7 @@ def backtest_strategy(strategy_id: str, strategy: BaseStrategy, ticker: str, loo
             risk_level=strategy_info['risk'] if strategy_info else 'Medium'
         )
 
+
 # ==========================================
 # API ENDPOINTS
 # ==========================================
@@ -829,34 +852,54 @@ strategies = {
     "var": VARStrategy(),
     "rl": RLPortfolioStrategy(),
     "ensemble": EnsembleStrategy(),
-    "wavelet": WaveletMLStrategy()
+    "wavelet": WaveletMLStrategy(),
+    "random_forest": RandomForestStrategy(),
+    "svm": SVMStrategy(),
+    "fama_french": FamaFrenchStrategy(),
+    "shap": SHAPExplainerStrategy()
 }
+
+# Add XGBoost if available
+if XGBOOST_AVAILABLE:
+    strategies["xgboost"] = XGBoostStrategy()
+
 
 class StrategyRequest(BaseModel):
     strategy_id: str
     tickers: List[str]
 
+
 @app.get("/")
 def health_check():
     return {"status": "online", "models_loaded": list(ml_models.keys()), "version": "2.0.0"}
 
+
 @app.get("/strategies")
 def list_strategies():
-    return {
-        "strategies": [
-            {"id": "macd", "name": "MACD Momentum", "category": "technical", "inputs": 1, "risk": "Low"},
-            {"id": "rsi", "name": "RSI Oscillator", "category": "technical", "inputs": 1, "risk": "Low"},
-            {"id": "bollinger", "name": "Bollinger Bands", "category": "technical", "inputs": 1, "risk": "Medium"},
-            {"id": "pairs", "name": "Statistical Arbitrage", "category": "statistical", "inputs": 2, "risk": "Medium"},
-            {"id": "sentiment", "name": "AI Sentiment Analysis", "category": "ai", "inputs": 1, "risk": "High"},
-            {"id": "arima", "name": "ARIMA Forecast", "category": "timeseries", "inputs": 1, "risk": "Medium"},
-            {"id": "garch", "name": "GARCH Volatility", "category": "timeseries", "inputs": 1, "risk": "Medium"},
-            {"id": "var", "name": "VAR Multi-Asset", "category": "timeseries", "inputs": "2-4", "risk": "High"},
-            {"id": "rl", "name": "Q-Learning Portfolio", "category": "advanced", "inputs": 1, "risk": "High"},
-            {"id": "ensemble", "name": "Ensemble Stacking", "category": "advanced", "inputs": 1, "risk": "Medium"},
-            {"id": "wavelet", "name": "Wavelet + ML", "category": "advanced", "inputs": 1, "risk": "High"}
-        ]
-    }
+    strategy_list = [
+        {"id": "macd", "name": "MACD Momentum", "category": "technical", "inputs": 1, "risk": "Low"},
+        {"id": "rsi", "name": "RSI Oscillator", "category": "technical", "inputs": 1, "risk": "Low"},
+        {"id": "bollinger", "name": "Bollinger Bands", "category": "technical", "inputs": 1, "risk": "Medium"},
+        {"id": "pairs", "name": "Statistical Arbitrage", "category": "statistical", "inputs": 2, "risk": "Medium"},
+        {"id": "sentiment", "name": "AI Sentiment Analysis", "category": "ai", "inputs": 1, "risk": "High"},
+        {"id": "arima", "name": "ARIMA Forecast", "category": "timeseries", "inputs": 1, "risk": "Medium"},
+        {"id": "garch", "name": "GARCH Volatility", "category": "timeseries", "inputs": 1, "risk": "Medium"},
+        {"id": "var", "name": "VAR Multi-Asset", "category": "timeseries", "inputs": "2-4", "risk": "High"},
+        {"id": "rl", "name": "Q-Learning Portfolio", "category": "advanced", "inputs": 1, "risk": "High"},
+        {"id": "ensemble", "name": "Ensemble Stacking", "category": "advanced", "inputs": 1, "risk": "Medium"},
+        {"id": "wavelet", "name": "Wavelet + ML", "category": "advanced", "inputs": 1, "risk": "High"},
+        {"id": "random_forest", "name": "Random Forest", "category": "ml", "inputs": 1, "risk": "Medium"},
+        {"id": "svm", "name": "SVM Classifier", "category": "ml", "inputs": 1, "risk": "Medium"},
+        {"id": "fama_french", "name": "Fama-French 5-Factor", "category": "factor", "inputs": 1, "risk": "Low"},
+        {"id": "shap", "name": "SHAP Explainer", "category": "explainability", "inputs": 1, "risk": "Medium"}
+    ]
+    
+    # Add XGBoost if available
+    if XGBOOST_AVAILABLE:
+        strategy_list.insert(11, {"id": "xgboost", "name": "XGBoost", "category": "ml", "inputs": 1, "risk": "Medium"})
+    
+    return {"strategies": strategy_list}
+
 
 @app.post("/execute", response_model=StrategyResponse)
 def execute_strategy(req: StrategyRequest):
@@ -875,7 +918,6 @@ async def compare_strategies(req: CompareRequest):
     ticker = req.ticker
     period = req.period
     
-    # Map period to days
     period_map = {
         "1w": 7,
         "1m": 30,
@@ -887,7 +929,6 @@ async def compare_strategies(req: CompareRequest):
     lookback_days = period_map.get(period, 30)
     
     try:
-        # Get price data for the period
         df = get_historical_data(ticker, period="2y")
         
         if len(df) < lookback_days:
@@ -898,7 +939,6 @@ async def compare_strategies(req: CompareRequest):
         end_price = float(period_data.iloc[-1]['Close'])
         period_return = ((end_price - start_price) / start_price) * 100
         
-        # Get all single-ticker strategies
         single_ticker_strategies = [
             ("macd", strategies["macd"]),
             ("rsi", strategies["rsi"]),
@@ -907,26 +947,30 @@ async def compare_strategies(req: CompareRequest):
             ("garch", strategies["garch"]),
             ("rl", strategies["rl"]),
             ("ensemble", strategies["ensemble"]),
-            ("wavelet", strategies["wavelet"])
+            ("wavelet", strategies["wavelet"]),
+            ("random_forest", strategies["random_forest"]),
+            ("svm", strategies["svm"]),
+            ("fama_french", strategies["fama_french"]),
+            ("shap", strategies["shap"])
         ]
         
-        # Backtest each strategy
+        # Add XGBoost if available
+        if XGBOOST_AVAILABLE:
+            single_ticker_strategies.insert(9, ("xgboost", strategies["xgboost"]))
+        
         results = []
         for strategy_id, strategy in single_ticker_strategies:
             result = backtest_strategy(strategy_id, strategy, ticker, lookback_days)
             results.append(result)
         
-        # Find best strategy by accuracy
         best_by_accuracy = max(results, key=lambda x: x.accuracy)
         best_by_return = max(results, key=lambda x: abs(x.cumulative_return))
         
-        # Calculate composite score for each result (without modifying the object)
         results_with_scores = []
         for result in results:
             composite_score = (result.accuracy * 0.6) + (abs(result.cumulative_return) * 0.4)
             results_with_scores.append((result, composite_score))
         
-        # Find best overall by composite score
         best_overall_tuple = max(results_with_scores, key=lambda x: x[1])
         best_overall = best_overall_tuple[0]
         
@@ -945,6 +989,7 @@ async def compare_strategies(req: CompareRequest):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Comparison error: {str(e)}")
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
